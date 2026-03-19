@@ -4,7 +4,7 @@ Base model for all the filters in the project
 from abc import ABC, abstractmethod
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
-from utils import to_gray
+from .utils import to_gray
 
 class Base(ABC):
 
@@ -13,13 +13,13 @@ class Base(ABC):
         pass
 
     @staticmethod
-    def _convolve(self, image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    def _convolve(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         """Vectorised convolution for a single channel via sliding_window_view."""
-        if image.shape >= 3:
+        if image.ndim >= 3:
             gray_image = to_gray(image)
         else:
             gray_image = image
-
+            
         kh, kw = kernel.shape
         pad_top, pad_bot = (kh - 1) // 2, kh // 2
         pad_left, pad_right = (kw - 1) // 2, kw // 2
