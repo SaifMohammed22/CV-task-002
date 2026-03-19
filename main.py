@@ -11,8 +11,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from base import Base
-from filters import (
+from src.base import Base
+from src.filters import (
     GaussianFilter,
     PrewittFilter,
     CannyFilter,
@@ -21,7 +21,7 @@ from filters import (
     HoughEllipsesFilter,
     ActiveContourFilter,
 )
-from utils import to_gray, to_bgr
+from src.utils import to_gray, to_bgr
 
 
 # Shared helpers
