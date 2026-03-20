@@ -58,8 +58,8 @@ def _sidebar_task_a() -> dict:
     st.sidebar.header("Task A – Parameters")
     params: dict = {}
 
-    params["canny_low"]  = st.sidebar.slider("Canny – low threshold",  10, 200, 50)
-    params["canny_high"] = st.sidebar.slider("Canny – high threshold", 50, 400, 150)
+    params["canny_low"]  = st.sidebar.slider("Canny – low threshold",  10, 200, 5)
+    params["canny_high"] = st.sidebar.slider("Canny – high threshold", 50, 400, 20)
 
     st.sidebar.markdown("**Hough Lines**")
     params["hl_thresh"]    = st.sidebar.slider("Line threshold",     10, 200, 80)

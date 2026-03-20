@@ -3,8 +3,9 @@ from __future__ import annotations
 import numpy as np
 import cv2
 
-from base import Base
-from utils import to_gray, to_bgr, ensure_uint8
+from .base import Base
+from .utils import to_gray, to_bgr, ensure_uint8
+
 
 
 # 1. Gaussian smoothing 
@@ -35,7 +36,8 @@ class PrewittFilter(Base):
 
     @property
     def kernel_x(self) -> np.ndarray:
-        return (1.0 / 3.0) * np.array([
+        # No 1/3 scaling: keeps gradient magnitudes in the full [−255, 255] range.
+        return np.array([
             [-1, 0, 1],
             [-1, 0, 1],
             [-1, 0, 1],
@@ -43,7 +45,7 @@ class PrewittFilter(Base):
 
     @property
     def kernel_y(self) -> np.ndarray:
-        return (1.0 / 3.0) * np.array([
+        return np.array([
             [ 1,  1,  1],
             [ 0,  0,  0],
             [-1, -1, -1],
@@ -51,32 +53,142 @@ class PrewittFilter(Base):
 
     def apply(self, image: np.ndarray) -> np.ndarray:
         """Return gradient-magnitude image (uint8)."""
-        gx = self._convolve(image, self.kernel_x).astype(np.float64)
-        gy = self._convolve(image, self.kernel_y).astype(np.float64)
+        gx = self._convolve_signed(image, self.kernel_x)
+        gy = self._convolve_signed(image, self.kernel_y)
         magnitude = np.sqrt(gx ** 2 + gy ** 2)
         return ensure_uint8(magnitude)
 
     def apply_xy(self, image: np.ndarray):
-        """Return (horizontal_edges, vertical_edges) separately."""
+        """Return (horizontal_edges, vertical_edges) as signed float64 arrays."""
         return (
-            self._convolve(image, self.kernel_x),
-            self._convolve(image, self.kernel_y),
+            self._convolve_signed(image, self.kernel_x),
+            self._convolve_signed(image, self.kernel_y),
         )
 
 
 # 3. Canny edge detector 
 
 class CannyFilter(Base):
-    """Canny edge detector with configurable thresholds."""
+    """
+    Canny edge detector built from scratch.
+    It reuses the existing GaussianFilter and PrewittFilter for steps 1 and 2.
+    """
 
     def __init__(self, low: int = 50, high: int = 150) -> None:
-        self.low  = low
+        self.low = low
         self.high = high
+        # Instantiate your existing filters to avoid rewriting code!
+        self.gaussian = GaussianFilter()
+        self.prewitt = PrewittFilter()
 
     def apply(self, image: np.ndarray) -> np.ndarray:
-        gray = to_gray(image)
-        return cv2.Canny(gray, self.low, self.high)
+        # Step 1: Noise Reduction
+        # We use your GaussianFilter to blur the image. 
+        # (It automatically handles grayscale conversion inside _convolve)
+        smoothed = self.gaussian.apply(image)
 
+        # Step 2: Gradient Calculation
+        # We use your PrewittFilter to get the X and Y gradients
+        gx, gy = self.prewitt.apply_xy(smoothed)
+        
+        # Convert to float64 to prevent overflow during math operations
+        gx = gx.astype(np.float64)
+        gy = gy.astype(np.float64)
+
+        # Calculate Magnitude (edge strength) and Direction (edge angle)
+        magnitude = np.hypot(gx, gy)
+        
+        # Calculate angle in degrees (0 to 180)
+        direction = np.arctan2(gy, gx) * 180 / np.pi
+        direction[direction < 0] += 180
+
+        # Step 3: Non-Maximum Suppression
+        # Thins the edges down to 1-pixel width
+        nms_image = self._non_max_suppression(magnitude, direction)
+
+        # Step 4 & 5: Double Thresholding and Hysteresis
+        # Identifies strong/weak edges and links them
+        final_edges = self._hysteresis(nms_image)
+
+        return ensure_uint8(final_edges)
+
+    def _non_max_suppression(self, mag: np.ndarray, angle: np.ndarray) -> np.ndarray:
+        """
+        Suppresses non-maximum pixels to make edges exactly 1 pixel wide.
+        """
+        h, w = mag.shape
+        out = np.zeros((h, w), dtype=np.float64)
+
+        for i in range(1, h - 1):
+            for j in range(1, w - 1):
+                q = 255
+                r = 255
+
+                # Discretize the angle into 4 main directions: 0, 45, 90, 135
+                
+                # Direction: 0 degrees (Horizontal edge, compare North-South)
+                if (0 <= angle[i, j] < 22.5) or (157.5 <= angle[i, j] <= 180):
+                    q = mag[i, j + 1]
+                    r = mag[i, j - 1]
+                
+                # Direction: 45 degrees (Diagonal)
+                elif (22.5 <= angle[i, j] < 67.5):
+                    q = mag[i + 1, j - 1]
+                    r = mag[i - 1, j + 1]
+                
+                # Direction: 90 degrees (Vertical edge, compare East-West)
+                elif (67.5 <= angle[i, j] < 112.5):
+                    q = mag[i + 1, j]
+                    r = mag[i - 1, j]
+                
+                # Direction: 135 degrees (Diagonal)
+                elif (112.5 <= angle[i, j] < 157.5):
+                    q = mag[i - 1, j - 1]
+                    r = mag[i + 1, j + 1]
+
+                # Keep the pixel only if it is the local maximum in its direction
+                if mag[i, j] >= q and mag[i, j] >= r:
+                    out[i, j] = mag[i, j]
+                else:
+                    out[i, j] = 0
+
+        return out
+
+    def _hysteresis(self, img: np.ndarray) -> np.ndarray:
+        """
+        Links weak edges to strong edges. Weak edges not connected to strong edges are removed.
+        """
+        # Dynamically scale thresholds based on the maximum pixel intensity found
+        max_val = img.max() if img.max() > 0 else 1
+        high_th = max_val * (self.high / 255.0)
+        low_th = high_th * (self.low / self.high) if self.high > 0 else 0
+
+        h, w = img.shape
+        res = np.zeros((h, w), dtype=np.uint8)
+
+        strong = 255
+        weak = 75
+
+        # Find coordinates of strong and weak pixels
+        strong_i, strong_j = np.where(img >= high_th)
+        weak_i, weak_j = np.where((img <= high_th) & (img >= low_th))
+
+        # Assign values to the result image
+        res[strong_i, strong_j] = strong
+        res[weak_i, weak_j] = weak
+
+        # Hysteresis Tracking: Check 8-connected neighbors for weak pixels
+        for i in range(1, h - 1):
+            for j in range(1, w - 1):
+                if res[i, j] == weak:
+                    # If a strong pixel is adjacent to this weak pixel, keep it as a strong edge
+                    if strong in res[i - 1 : i + 2, j - 1 : j + 2]:
+                        res[i, j] = strong
+                    else:
+                        # Otherwise, discard it as noise
+                        res[i, j] = 0
+
+        return res
 
 # 4. Hough line detector 
 
