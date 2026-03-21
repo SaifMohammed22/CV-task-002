@@ -4,11 +4,11 @@ import numpy as np
 import cv2
 
 from .base import Base
-from .utils import to_gray, to_bgr, ensure_uint8
+from src.utils import to_gray, to_bgr, ensure_uint8
 
 
 
-# 1. Gaussian smoothing 
+# 1. Gaussian smoothing
 
 class GaussianFilter(Base):
     """7×7 Gaussian filter for image smoothing."""
@@ -29,7 +29,7 @@ class GaussianFilter(Base):
         return self._convolve(image, self.kernel)
 
 
-# 2. Prewitt edge filter 
+# 2. Prewitt edge filter
 
 class PrewittFilter(Base):
     """Prewitt edge detector – returns gradient magnitude as uint8."""
@@ -66,7 +66,7 @@ class PrewittFilter(Base):
         )
 
 
-# 3. Canny edge detector 
+# 3. Canny edge detector
 
 class CannyFilter(Base):
     """
@@ -83,21 +83,21 @@ class CannyFilter(Base):
 
     def apply(self, image: np.ndarray) -> np.ndarray:
         # Step 1: Noise Reduction
-        # We use your GaussianFilter to blur the image. 
+        # We use your GaussianFilter to blur the image.
         # (It automatically handles grayscale conversion inside _convolve)
         smoothed = self.gaussian.apply(image)
 
         # Step 2: Gradient Calculation
         # We use your PrewittFilter to get the X and Y gradients
         gx, gy = self.prewitt.apply_xy(smoothed)
-        
+
         # Convert to float64 to prevent overflow during math operations
         gx = gx.astype(np.float64)
         gy = gy.astype(np.float64)
 
         # Calculate Magnitude (edge strength) and Direction (edge angle)
         magnitude = np.hypot(gx, gy)
-        
+
         # Calculate angle in degrees (0 to 180)
         direction = np.arctan2(gy, gx) * 180 / np.pi
         direction[direction < 0] += 180
@@ -125,22 +125,22 @@ class CannyFilter(Base):
                 r = 255
 
                 # Discretize the angle into 4 main directions: 0, 45, 90, 135
-                
+
                 # Direction: 0 degrees (Horizontal edge, compare North-South)
                 if (0 <= angle[i, j] < 22.5) or (157.5 <= angle[i, j] <= 180):
                     q = mag[i, j + 1]
                     r = mag[i, j - 1]
-                
+
                 # Direction: 45 degrees (Diagonal)
                 elif (22.5 <= angle[i, j] < 67.5):
                     q = mag[i + 1, j - 1]
                     r = mag[i - 1, j + 1]
-                
+
                 # Direction: 90 degrees (Vertical edge, compare East-West)
                 elif (67.5 <= angle[i, j] < 112.5):
                     q = mag[i + 1, j]
                     r = mag[i - 1, j]
-                
+
                 # Direction: 135 degrees (Diagonal)
                 elif (112.5 <= angle[i, j] < 157.5):
                     q = mag[i - 1, j - 1]
@@ -190,7 +190,7 @@ class CannyFilter(Base):
 
         return res
 
-# 4. Hough line detector 
+# 4. Hough line detector
 
 class HoughLinesFilter(Base):
     """
@@ -230,7 +230,7 @@ class HoughLinesFilter(Base):
         return output
 
 
-# 5. Hough circle detector 
+# 5. Hough circle detector
 
 class HoughCirclesFilter(Base):
     """
@@ -275,7 +275,7 @@ class HoughCirclesFilter(Base):
         return output
 
 
-# 6. Hough ellipse detector 
+# 6. Hough ellipse detector
 
 class HoughEllipsesFilter(Base):
     """
@@ -313,119 +313,158 @@ class HoughEllipsesFilter(Base):
         return output
 
 
-# 7. Active Contour (Snake) 
+# 7. Active Contour (Snake)
+
+# 7. Active Contour (Snake)
+
+# 7. Active Contour (Snake)
 
 class ActiveContourFilter(Base):
     """
-    Greedy Active Contour (snake) implementation.
-
-    The snake is initialised as an ellipse centred on the image.  Each
-    iteration every point moves to the neighbour (in a (2w+1)×(2w+1) window)
-    that minimises the combined internal + external energy.
-
-    Returns the BGR image with the evolved contour drawn in green, together
-    with the chain code, perimeter, and area as metadata.
+    Greedy Active Contour (snake) implementation with Local Normalization.
     """
 
     def __init__(
-        self,
-        n_points:   int   = 200,
-        alpha:      float = 0.01,   # elasticity  (internal – continuity)
-        beta:       float = 0.1,    # stiffness   (internal – curvature)
-        gamma:      float = 0.01,   # step size
-        iterations: int   = 200,
-        w_size:     int   = 3,
+            self,
+            n_points: int = 200,
+            alpha: float = 0.01,  # elasticity  (internal – continuity)
+            beta: float = 0.1,  # stiffness   (internal – curvature)
+            gamma: float = 0.01,  # step size   (external - edge attraction)
+            iterations: int = 200,
+            w_size: int = 3,
     ) -> None:
-        self.n_points   = n_points
-        self.alpha      = alpha
-        self.beta       = beta
-        self.gamma      = gamma
+        self.n_points = n_points
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
         self.iterations = iterations
-        self.w_size     = w_size
-
-    # helpers 
+        self.w_size = w_size
 
     @staticmethod
-    def _init_ellipse(h: int, w: int, n: int) -> np.ndarray:
-        """Return *n* equidistant points on the ellipse centred in the image."""
-        t = np.linspace(0, 2 * np.pi, n, endpoint=False)
-        x = w / 2 + (w / 2 - 10) * np.cos(t)
-        y = h / 2 + (h / 2 - 10) * np.sin(t)
-        return np.column_stack([x, y]).astype(np.float64)
+    def _init_contour_from_edges(gray: np.ndarray, n: int) -> np.ndarray:
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        h, w = gray.shape
+        corners_sum = int(thresh[0, 0]) + int(thresh[0, w - 1]) + int(thresh[h - 1, 0]) + int(thresh[h - 1, w - 1])
+        if corners_sum > 255 * 2:
+            thresh = cv2.bitwise_not(thresh)
+
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if len(contours) == 0:
+            cx, cy = w // 2, h // 2
+            r = min(h, w) // 2.5
+            t = np.linspace(0, 2 * np.pi, n, endpoint=False)
+            return np.column_stack([cx + r * np.cos(t), cy + r * np.sin(t)]).astype(np.float64)
+
+        largest = max(contours, key=cv2.contourArea)
+        hull = cv2.convexHull(largest)
+        hull_points = hull[:, 0, :]
+
+        # تقليل نسبة التكبير المبدئي إلى 5% فقط (بدلاً من 15%) ليكون أقرب للشكل
+        M = cv2.moments(largest)
+        if M['m00'] != 0:
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+            center = np.array([cx, cy])
+            hull_points = center + (hull_points - center) * 1.05
+
+        hull_points = np.vstack((hull_points, hull_points[0]))
+
+        diffs = np.diff(hull_points, axis=0)
+        distances = np.linalg.norm(diffs, axis=1)
+        cum_dist = np.concatenate(([0], np.cumsum(distances)))
+
+        target_dist = np.linspace(0, cum_dist[-1], n, endpoint=False)
+        x_interp = np.interp(target_dist, cum_dist, hull_points[:, 0])
+        y_interp = np.interp(target_dist, cum_dist, hull_points[:, 1])
+
+        return np.column_stack([x_interp, y_interp]).astype(np.float64)
 
     @staticmethod
     def _external_energy(gray: np.ndarray) -> np.ndarray:
-        """Negative gradient magnitude as external energy map."""
-        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        return -(gx ** 2 + gy ** 2)
+        """استخدام Distance Transform لصنع مجال مغناطيسي يجذب النقاط للحواف من مسافة بعيدة"""
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # استخراج الحواف
+        edges = cv2.Canny(blurred, 30, 100)
 
-    def _internal_energy(self, snake: np.ndarray, i: int) -> float:
-        """Continuity + curvature energy for the *i*-th point."""
-        n   = len(snake)
-        p_prev = snake[(i - 1) % n]
-        p_curr = snake[i]
-        p_next = snake[(i + 1) % n]
+        # عكس الألوان (نجعل الحواف سوداء والخلفية بيضاء)
+        inverted = cv2.bitwise_not(edges)
 
-        # mean distance for normalisation
-        d_mean = np.mean(np.linalg.norm(np.diff(snake, axis=0), axis=1))
+        # حساب المسافة من كل بيكسل إلى أقرب حافة
+        # هذا سيجعل الـ Snake يتدحرج تلقائياً نحو الحافة (لأنه يبحث عن أقل طاقة)
+        dist = cv2.distanceTransform(inverted, cv2.DIST_L2, 5)
 
-        continuity = (d_mean - np.linalg.norm(p_curr - p_prev)) ** 2
-        curvature  = np.linalg.norm(p_next - 2 * p_curr + p_prev) ** 2
+        if dist.max() > 0:
+            dist = dist / dist.max()
 
-        return self.alpha * continuity + self.beta * curvature
-
-    # main apply 
+        return dist  # نرجعها بالموجب لأننا نريد للـ Snake أن يقلل المسافة (الوصول لـ 0)
 
     def apply(self, image: np.ndarray) -> np.ndarray:
-        """
-        Evolve the snake and return the annotated BGR image.
-
-        Extra attributes set on return
-        ──────────────────────────────
-        self.chain_code  – Freeman-8 chain code (list[int])
-        self.perimeter   – estimated perimeter (float)
-        self.area        – enclosed area (float)
-        self.contour     – final snake points as (N,1,2) int32 array
-        """
-        gray   = to_gray(image)
-        h, w   = gray.shape
+        gray = to_gray(image)
+        h, w = gray.shape
         energy = self._external_energy(gray)
 
-        snake = self._init_ellipse(h, w, self.n_points)
-        r     = self.w_size                    # search radius
+        snake = self._init_contour_from_edges(gray, self.n_points)
+        r = self.w_size
 
         for _ in range(self.iterations):
-            for i in range(len(snake)):
-                original  = snake[i].copy()
-                best_e    = np.inf
-                best_pos  = original.copy()
+            # حساب متوسط المسافة لخطوة Continuity مرة واحدة كل لفة
+            diffs = np.diff(np.vstack((snake, snake[0])), axis=0)
+            d_mean = np.mean(np.linalg.norm(diffs, axis=1))
 
+            for i in range(len(snake)):
+                original = snake[i].copy()
+                n = len(snake)
+                p_prev = snake[(i - 1) % n]
+                p_next = snake[(i + 1) % n]
+
+                candidates = []
                 for dy in range(-r, r + 1):
                     for dx in range(-r, r + 1):
                         nx = int(original[0] + dx)
                         ny = int(original[1] + dy)
                         if not (0 <= nx < w and 0 <= ny < h):
                             continue
-                        # temporarily place point to evaluate internal energy
-                        snake[i] = [nx, ny]
-                        e = (self._internal_energy(snake, i)
-                             + self.gamma * energy[ny, nx])
-                        if e < best_e:
-                            best_e  = e
-                            best_pos = np.array([nx, ny], dtype=np.float64)
 
-                snake[i] = best_pos  # commit the best candidate
+                        curr_point = np.array([nx, ny], dtype=np.float64)
 
-        #  build OpenCV contour for chain-code + area utils 
+                        # حساب الطاقات (بدون ضربها في المعاملات الآن)
+                        e_cont = (d_mean - np.linalg.norm(curr_point - p_prev)) ** 2
+                        e_curv = np.linalg.norm(p_next - 2 * curr_point + p_prev) ** 2
+                        e_ext = energy[ny, nx]
+
+                        candidates.append([nx, ny, e_cont, e_curv, e_ext])
+
+                if not candidates:
+                    continue
+
+                candidates = np.array(candidates)
+
+                # تطبيع الطاقات محلياً (Local Normalization) - مهم جداً لنجاح الخوارزمية
+                def normalize(arr):
+                    m, M = np.min(arr), np.max(arr)
+                    return (arr - m) / (M - m) if M > m else np.zeros_like(arr)
+
+                e_cont_norm = normalize(candidates[:, 2])
+                e_curv_norm = normalize(candidates[:, 3])
+                e_ext_norm = normalize(candidates[:, 4])
+
+                # حساب الطاقة الكلية بعد التطبيع
+                total_e = (self.alpha * e_cont_norm +
+                           self.beta * e_curv_norm +
+                           self.gamma * e_ext_norm)
+
+                best_idx = np.argmin(total_e)
+                snake[i] = [candidates[best_idx, 0], candidates[best_idx, 1]]
+
         self.contour = snake.astype(np.int32).reshape(-1, 1, 2)
-
-        from utils import contour_to_chain_code, chain_code_perimeter, contour_area
+        from src.utils import contour_to_chain_code, chain_code_perimeter, contour_area
         self.chain_code = contour_to_chain_code(self.contour)
-        self.perimeter  = chain_code_perimeter(self.chain_code)
-        self.area       = contour_area(self.contour)
+        self.perimeter = chain_code_perimeter(self.chain_code)
+        self.area = contour_area(self.contour)
 
-        # draw result 
         output = to_bgr(image)
         cv2.polylines(output, [self.contour], isClosed=True, color=(0, 255, 0), thickness=2)
         return output
