@@ -30,7 +30,7 @@ class Base(ABC):
     def _convolve_signed(self, image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         """
         Same as _convolve but returns raw float64 WITHOUT clipping.
-        Required for gradient filters (Prewitt, Sobel) where negative
+        Required for gradient filters (e.g., Sobel) where negative
         responses carry essential directional information.
         """
         gray_image = to_gray(image) if len(image.shape) >= 3 else image

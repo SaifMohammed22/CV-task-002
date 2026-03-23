@@ -22,3 +22,4 @@ Steps for cany edge detector:
 2. Seif Samaan
 3. Fady Osama
 4. Mohamed Ashraf
+5. Manar Yousry

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from src.base import Base
 from src.filters import (
     GaussianFilter,
-    PrewittFilter,
+    SobelFilter,
     CannyFilter,
     HoughLinesFilter,
     HoughCirclesFilter,
@@ -50,6 +50,60 @@ def _run_filter(flt: Base, image: np.ndarray) -> np.ndarray:
     return flt.apply(image)
 
 
+def _signed_gradient_to_uint8(grad: np.ndarray) -> np.ndarray:
+    """Map signed gradients to uint8 for display (0->negative, 128->zero, 255->positive)."""
+    grad64 = grad.astype(np.float64)
+    max_abs = float(np.max(np.abs(grad64)))
+    if max_abs == 0:
+        return np.full(grad64.shape, 128, dtype=np.uint8)
+    scaled = (grad64 / max_abs) * 127.0 + 128.0
+    return np.clip(scaled, 0, 255).astype(np.uint8)
+
+
+def _inject_task_a_styles() -> None:
+    """Apply lightweight styling for clearer phase comparison blocks."""
+    st.markdown(
+        """
+        <style>
+        .phase-card {
+            border: 1px solid rgba(120, 134, 160, 0.35);
+            border-radius: 14px;
+            padding: 0.8rem 0.9rem 0.25rem 0.9rem;
+            margin-bottom: 1.1rem;
+            background: linear-gradient(180deg, rgba(30, 37, 52, 0.28), rgba(19, 24, 35, 0.18));
+        }
+        .phase-title {
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            font-size: 1.02rem;
+            margin-bottom: 0.4rem;
+            color: #EAF1FF;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _show_phase_compare(
+    step_title: str,
+    original: np.ndarray,
+    processed: np.ndarray,
+    processed_title: str,
+    *,
+    processed_gray: bool = False,
+) -> None:
+    """Render a side-by-side original vs processed view for one phase."""
+    st.markdown("<div class='phase-card'>", unsafe_allow_html=True)
+    st.markdown(f"<div class='phase-title'>{step_title}</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        _show("Original", original)
+    with c2:
+        _show(processed_title, processed, gray=processed_gray)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 # Edge / shape detection
 
 
@@ -58,8 +112,8 @@ def _sidebar_task_a() -> dict:
     st.sidebar.header("Task A – Parameters")
     params: dict = {}
 
-    params["canny_low"]  = st.sidebar.slider("Canny – low threshold",  10, 200, 5)
-    params["canny_high"] = st.sidebar.slider("Canny – high threshold", 50, 400, 20)
+    params["canny_low"]  = st.sidebar.slider("Canny – low threshold",  10, 200, 50)
+    params["canny_high"] = st.sidebar.slider("Canny – high threshold", 50, 400, 150)
 
     st.sidebar.markdown("**Hough Lines**")
     params["hl_thresh"]    = st.sidebar.slider("Line threshold",     10, 200, 80)
@@ -74,11 +128,13 @@ def _sidebar_task_a() -> dict:
 
     st.sidebar.markdown("**Hough Ellipses**")
     params["he_min_pts"]   = st.sidebar.slider("Min contour points", 5, 50, 5)
+    params["he_min_area"]  = st.sidebar.slider("Min contour area", 20, 2000, 120)
 
     return params
 
 
 def page_task_a() -> None:
+    _inject_task_a_styles()
     st.title("Task A – Edge & Shape Detection")
     st.markdown(
         "Detect edges (Canny), lines, circles, and ellipses (Hough), "
@@ -92,37 +148,65 @@ def page_task_a() -> None:
 
     p = _sidebar_task_a()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        _show("Original", image)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Original Reference")
+    st.sidebar.image(
+        cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+        caption="Pinned original",
+        use_container_width=True,
+    )
 
     #  Gaussian smoothing 
-    st.subheader("Step 1 – Gaussian Smoothing")
     smoothed = _run_filter(GaussianFilter(), image)
-    col1, col2 = st.columns(2)
-    with col1:
-        _show("Smoothed (Gaussian 7×7)", smoothed, gray=True)
+    _show_phase_compare(
+        "Step 1 – Gaussian Smoothing",
+        image,
+        smoothed,
+        "Smoothed (Gaussian 7x7)",
+        processed_gray=True,
+    )
 
-    #  Prewitt edges 
-    st.subheader("Step 2 – Prewitt Gradient")
-    prew = PrewittFilter()
-    gx, gy = prew.apply_xy(image)
-    mag    = prew.apply(image)
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        _show("Gradient X", gx, gray=True)
-    with col2:
-        _show("Gradient Y", gy, gray=True)
-    with col3:
-        _show("Magnitude", mag, gray=True)
+    #  Sobel edges 
+    sobel = SobelFilter()
+    gx, gy = sobel.apply_xy(smoothed)
+    mag = sobel.apply(smoothed)
+    gx_vis = _signed_gradient_to_uint8(gx)
+    gy_vis = _signed_gradient_to_uint8(gy)
+
+    st.markdown("<div class='phase-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='phase-title'>Step 2 – Sobel Gradient</div>", unsafe_allow_html=True)
+    t1, t2, t3 = st.tabs(["GX (signed)", "GY (signed)", "Magnitude"])
+    with t1:
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            _show("Original", image)
+        with c2:
+            _show("Gradient X (signed)", gx_vis, gray=True)
+    with t2:
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            _show("Original", image)
+        with c2:
+            _show("Gradient Y (signed)", gy_vis, gray=True)
+    with t3:
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            _show("Original", image)
+        with c2:
+            _show("Magnitude", mag, gray=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     #  Canny 
-    st.subheader("Step 3 – Canny Edge Detector")
     edges = _run_filter(CannyFilter(p["canny_low"], p["canny_high"]), image)
-    _show("Canny edges", edges, gray=True)
+    _show_phase_compare(
+        "Step 3 – Canny Edge Detector",
+        image,
+        edges,
+        "Canny edges",
+        processed_gray=True,
+    )
 
     #  Hough lines 
-    st.subheader("Step 4 – Hough Lines")
     lines_img = _run_filter(
         HoughLinesFilter(
             threshold      = p["hl_thresh"],
@@ -133,10 +217,14 @@ def page_task_a() -> None:
         ),
         image,
     )
-    _show("Detected lines (red)", lines_img)
+    _show_phase_compare(
+        "Step 4 – Hough Lines",
+        image,
+        lines_img,
+        "Detected lines (red)",
+    )
 
     #  Hough circles 
-    st.subheader("Step 5 – Hough Circles")
     circles_img = _run_filter(
         HoughCirclesFilter(
             dp       = p["hc_dp"],
@@ -146,19 +234,29 @@ def page_task_a() -> None:
         ),
         image,
     )
-    _show("Detected circles (green)", circles_img)
+    _show_phase_compare(
+        "Step 5 – Hough Circles",
+        image,
+        circles_img,
+        "Detected circles (green)",
+    )
 
     #  Hough ellipses 
-    st.subheader("Step 6 – Hough Ellipses")
     ellipses_img = _run_filter(
         HoughEllipsesFilter(
             canny_low  = p["canny_low"],
             canny_high = p["canny_high"],
             min_points = p["he_min_pts"],
+            min_area   = p["he_min_area"],
         ),
         image,
     )
-    _show("Detected ellipses (blue)", ellipses_img)
+    _show_phase_compare(
+        "Step 6 – Hough Ellipses",
+        image,
+        ellipses_img,
+        "Detected ellipses (blue)",
+    )
 
 
 
@@ -191,12 +289,13 @@ def page_task_b() -> None:
 
     p = _sidebar_task_b()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        _show("Original", image)
-
     run = st.button("▶  Evolve snake", type="primary")
     if not run:
+        c1, c2 = st.columns(2)
+        with c1:
+            _show("Original", image)
+        with c2:
+            st.info("Click **Evolve snake** to preview initialized and evolved contours.")
         st.caption("Adjust parameters in the sidebar, then click **Evolve snake**.")
         return
 
@@ -211,7 +310,22 @@ def page_task_b() -> None:
         )
         result = snake.apply(image)
 
-    with col2:
+    init_overlay = to_bgr(image)
+    if snake.initial_contour is not None:
+        cv2.polylines(
+            init_overlay,
+            [snake.initial_contour],
+            isClosed=True,
+            color=(0, 215, 255),
+            thickness=2,
+        )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        _show("Original", image)
+    with c2:
+        _show("Initialized contour (yellow)", init_overlay)
+    with c3:
         _show("Evolved contour (green)", result)
 
     # Chain-code & metrics 
