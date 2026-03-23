@@ -36,14 +36,12 @@ def _upload_to_bgr() -> np.ndarray | None:
     pil_img = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-
 def _show(title: str, image: np.ndarray, *, gray: bool = False) -> None:
     """Display a numpy image in Streamlit (converts BGR→RGB automatically)."""
     if gray or len(image.shape) == 2:
-        st.image(image, caption=title, use_container_width=True, clamp=True)
+        st.image(image, caption=title, width="stretch", clamp=True)
     else:
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=title, use_container_width=True)
-
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=title, width="stretch")
 
 def _run_filter(flt: Base, image: np.ndarray) -> np.ndarray:
     """Thin wrapper so callers remain decoupled from concrete filter types."""
@@ -116,22 +114,20 @@ def _sidebar_task_a() -> dict:
     params["canny_high"] = st.sidebar.slider("Canny – high threshold", 50, 400, 150)
 
     st.sidebar.markdown("**Hough Lines**")
-    params["hl_thresh"]    = st.sidebar.slider("Line threshold",     10, 200, 80)
-    params["hl_min_len"]   = st.sidebar.slider("Min line length",     5, 300, 50)
-    params["hl_max_gap"]   = st.sidebar.slider("Max line gap",        1,  50, 10)
+    params["hl_thresh"]    = st.sidebar.slider("Line Threshold",       10, 300, 80)
+    params["hl_rho_res"]   = st.sidebar.slider("Rho Resolution",       0.5, 5.0, 1.0)
+    params["hl_theta_res"] = st.sidebar.slider("Theta Res (deg)",      1.0, 5.0, 1.0) * (np.pi / 180.0)
 
     st.sidebar.markdown("**Hough Circles**")
-    params["hc_dp"]        = st.sidebar.slider("dp",          1.0, 3.0, 1.2)
-    params["hc_min_dist"]  = st.sidebar.slider("Min distance", 10, 200,  30)
-    params["hc_p1"]        = st.sidebar.slider("param1",       10, 300, 100)
-    params["hc_p2"]        = st.sidebar.slider("param2",        5, 100,  30)
+    params["hc_thresh"]    = st.sidebar.slider("Circle Threshold",     10, 300, 100)
+    params["hc_min_r"]     = st.sidebar.slider("Min Radius",           1, 100, 10)
+    params["hc_max_r"]     = st.sidebar.slider("Max Radius",           10, 200, 50)
 
-    st.sidebar.markdown("**Hough Ellipses**")
-    params["he_min_pts"]   = st.sidebar.slider("Min contour points", 5, 50, 5)
-    params["he_min_area"]  = st.sidebar.slider("Min contour area", 20, 2000, 120)
+    st.sidebar.markdown("**Hough Ellipses (PCA)**")
+    params["he_min_pts"]   = st.sidebar.slider("Min contour points",   5, 50, 10)
+    params["he_min_area"]  = st.sidebar.slider("Min contour area",     20, 2000, 120)
 
     return params
-
 
 def page_task_a() -> None:
     _inject_task_a_styles()
@@ -207,11 +203,12 @@ def page_task_a() -> None:
     )
 
     #  Hough lines 
+    #  Hough lines 
     lines_img = _run_filter(
         HoughLinesFilter(
+            rho_res        = p["hl_rho_res"],
+            theta_res      = p["hl_theta_res"],
             threshold      = p["hl_thresh"],
-            min_line_length= p["hl_min_len"],
-            max_line_gap   = p["hl_max_gap"],
             canny_low      = p["canny_low"],
             canny_high     = p["canny_high"],
         ),
@@ -227,10 +224,11 @@ def page_task_a() -> None:
     #  Hough circles 
     circles_img = _run_filter(
         HoughCirclesFilter(
-            dp       = p["hc_dp"],
-            min_dist = p["hc_min_dist"],
-            param1   = p["hc_p1"],
-            param2   = p["hc_p2"],
+            min_radius = p["hc_min_r"],
+            max_radius = p["hc_max_r"],
+            threshold  = p["hc_thresh"],
+            canny_low  = p["canny_low"],
+            canny_high = p["canny_high"],
         ),
         image,
     )
@@ -257,7 +255,6 @@ def page_task_a() -> None:
         ellipses_img,
         "Detected ellipses (blue)",
     )
-
 
 
 # Task B – Active Contour (Snake)

@@ -201,85 +201,132 @@ class CannyFilter(Base):
 
 class HoughLinesFilter(Base):
     """
-    Detects straight lines with the Probabilistic Hough Transform and
-    superimposes them on the original image.
+    Detects straight lines using a from-scratch Standard Hough Transform 
+    and superimposes them on the original image.
     """
 
     def __init__(
         self,
-        rho: float = 1,
-        theta: float = np.pi / 180,
+        rho_res: float = 1.0,
+        theta_res: float = np.pi / 180.0,
         threshold: int = 80,
-        min_line_length: int = 50,
-        max_line_gap: int = 10,
         canny_low: int = 50,
         canny_high: int = 150,
     ) -> None:
-        self._canny           = CannyFilter(canny_low, canny_high)
-        self.rho              = rho
-        self.theta            = theta
-        self.threshold        = threshold
-        self.min_line_length  = min_line_length
-        self.max_line_gap     = max_line_gap
+        self._canny     = CannyFilter(canny_low, canny_high)
+        self.rho_res    = rho_res
+        self.theta_res  = theta_res
+        self.threshold  = threshold
 
     def apply(self, image: np.ndarray) -> np.ndarray:
-        edges  = self._canny.apply(image)
+        edges = self._canny.apply(image)
         output = to_bgr(image)
-        lines  = cv2.HoughLinesP(
-            edges,
-            self.rho, self.theta, self.threshold,
-            minLineLength=self.min_line_length,
-            maxLineGap=self.max_line_gap,
-        )
-        if lines is not None:
-            for x1, y1, x2, y2 in lines[:, 0]:
-                cv2.line(output, (x1, y1), (x2, y2), (0, 0, 255), 2)
-        return output
+        
+        h, w = edges.shape
+        diag_len = int(np.ceil(np.sqrt(h**2 + w**2)))
+        
+        # Define parameter spaces
+        rhos = np.arange(-diag_len, diag_len + 1, self.rho_res)
+        thetas = np.arange(0, np.pi, self.theta_res)
+        
+        # Accumulator array
+        accumulator = np.zeros((len(rhos), len(thetas)), dtype=np.int32)
+        y_idxs, x_idxs = np.nonzero(edges)
+        
+        # Vectorized voting
+        cos_t = np.cos(thetas)
+        sin_t = np.sin(thetas)
+        
+        for i in range(len(x_idxs)):
+            x, y = x_idxs[i], y_idxs[i]
+            # Calculate rho for all thetas simultaneously
+            rho_vals = x * cos_t + y * sin_t
+            # Find closest indices in the rhos array
+            rho_idxs = np.round((rho_vals + diag_len) / self.rho_res).astype(int)
+            
+            # Cast votes
+            for t_idx, r_idx in enumerate(rho_idxs):
+                accumulator[r_idx, t_idx] += 1
 
+        # Extract local maxima (peaks) based on threshold
+        peaks = np.argwhere(accumulator >= self.threshold)
+        
+        # Convert polar parameters back to Cartesian lines for drawing
+        for r_idx, t_idx in peaks:
+            rho = rhos[r_idx]
+            theta = thetas[t_idx]
+            
+            a = np.cos(theta)
+            b = np.sin(theta)
+            x0 = a * rho
+            y0 = b * rho
+            
+            # Extend lines across the image
+            x1 = int(x0 + 2000 * (-b))
+            y1 = int(y0 + 2000 * (a))
+            x2 = int(x0 - 2000 * (-b))
+            y2 = int(y0 - 2000 * (a))
+            
+            cv2.line(output, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            
+        return output
 
 # 5. Hough circle detector
 
 class HoughCirclesFilter(Base):
     """
-    Detects circles with the Hough gradient method and
-    superimposes them on the original image.
+    Detects circles using a from-scratch Hough Transform by voting 
+    in a 3D parameter space (x, y, radius).
     """
 
     def __init__(
         self,
-        dp: float = 1.2,
-        min_dist: int = 30,
-        param1: int = 100,
-        param2: int = 30,
-        min_radius: int = 0,
-        max_radius: int = 0,
+        min_radius: int = 10,
+        max_radius: int = 50,
+        threshold: int = 100,
+        canny_low: int = 50,
+        canny_high: int = 150,
     ) -> None:
-        self._gaussian = GaussianFilter()
-        self.dp = dp
-        self.min_dist = min_dist
-        self.param1 = param1
-        self.param2 = param2
-        self.min_radius = min_radius
-        self.max_radius = max_radius
+        self._canny = CannyFilter(canny_low, canny_high)
+        self.min_radius = max(1, min_radius)
+        self.max_radius = max(self.min_radius + 1, max_radius)
+        self.threshold = threshold
 
     def apply(self, image: np.ndarray) -> np.ndarray:
-        # Use the custom from-scratch Gaussian filter before Hough voting.
-        blurred = self._gaussian.apply(image)
+        edges = self._canny.apply(image)
         output = to_bgr(image)
-        circles = cv2.HoughCircles(
-            blurred,
-            cv2.HOUGH_GRADIENT,
-            dp=self.dp,
-            minDist=self.min_dist,
-            param1=self.param1,
-            param2=self.param2,
-            minRadius=self.min_radius,
-            maxRadius=self.max_radius,
-        )
-        if circles is not None:
-            for cx, cy, r in np.round(circles[0]).astype(int):
+        
+        h, w = edges.shape
+        y_idxs, x_idxs = np.nonzero(edges)
+        
+        # Pre-compute angles to speed up voting (5-degree steps for efficiency)
+        thetas = np.deg2rad(np.arange(0, 360, 5))
+        cos_t = np.cos(thetas)
+        sin_t = np.sin(thetas)
+        
+        # Iterate over possible radii to save 3D matrix memory
+        for r in range(self.min_radius, self.max_radius):
+            acc = np.zeros((h, w), dtype=np.int32)
+            
+            for x, y in zip(x_idxs, y_idxs):
+                # Calculate candidate centers
+                a_vals = np.round(x - r * cos_t).astype(int)
+                b_vals = np.round(y - r * sin_t).astype(int)
+                
+                # Keep only centers that fall within image boundaries
+                valid_mask = (a_vals >= 0) & (a_vals < w) & (b_vals >= 0) & (b_vals < h)
+                a_valid = a_vals[valid_mask]
+                b_valid = b_vals[valid_mask]
+                
+                # Accumulate votes
+                np.add.at(acc, (b_valid, a_valid), 1)
+                
+            # Find peaks for this specific radius
+            peaks = np.argwhere(acc >= self.threshold)
+            for cy, cx in peaks:
                 cv2.circle(output, (cx, cy), r, (0, 255, 0), 2)
-                cv2.circle(output, (cx, cy), 2, (0, 0, 255), 3)
+                cv2.circle(output, (cx, cy), 2, (0, 0, 255), 3) # Center dot
+                
         return output
 
 
@@ -287,33 +334,64 @@ class HoughCirclesFilter(Base):
 
 class HoughEllipsesFilter(Base):
     """
-    Fits ellipses to contours found after Canny edge detection and
-    superimposes them on the original image.
-
-    OpenCV does not expose a direct Hough-ellipse transform; the standard
-    approach is contour-fitting, which is equivalent for typical use cases.
+    Fits ellipses to contours by calculating the spatial moments and 
+    covariance matrix (PCA) from scratch, replacing cv2.fitEllipse.
     """
 
     def __init__(
         self,
-        canny_low: int  = 50,
+        canny_low: int = 50,
         canny_high: int = 150,
-        min_points: int = 5,
+        min_points: int = 10,
         min_area: float = 120.0,
         max_area_ratio: float = 0.9,
-        min_axis: float = 8.0,
     ) -> None:
-        self._canny     = CannyFilter(canny_low, canny_high)
+        self._canny = CannyFilter(canny_low, canny_high)
         self.min_points = min_points
         self.min_area = min_area
         self.max_area_ratio = max_area_ratio
-        self.min_axis = min_axis
+
+    def _fit_ellipse_pca(self, points: np.ndarray):
+        """Fits an ellipse to a set of 2D points using covariance."""
+        pts = points[:, 0, :].astype(np.float64)
+        n = len(pts)
+        if n < 5:
+            return None
+            
+        x, y = pts[:, 0], pts[:, 1]
+        x_mean, y_mean = np.mean(x), np.mean(y)
+        
+        # Calculate covariance matrix components
+        u11 = np.sum((x - x_mean)**2) / n
+        u22 = np.sum((y - y_mean)**2) / n
+        u12 = np.sum((x - x_mean) * (y - y_mean)) / n
+        
+        # Find eigenvalues to get axis lengths
+        trace = u11 + u22
+        det = u11 * u22 - u12**2
+        sqrt_term = np.sqrt(max(0, trace**2 - 4 * det))
+        
+        lambda1 = (trace + sqrt_term) / 2
+        lambda2 = (trace - sqrt_term) / 2
+        
+        # Find orientation angle
+        if u12 != 0:
+            angle = 0.5 * np.arctan2(2 * u12, u11 - u22)
+        else:
+            angle = 0 if u11 > u22 else np.pi / 2
+            
+        angle_deg = np.rad2deg(angle)
+        
+        # Scale eigenvalues to approximate bounding axes (empirical scaling for boundaries)
+        major_axis = 2.0 * np.sqrt(lambda1) * 2.82 
+        minor_axis = 2.0 * np.sqrt(lambda2) * 2.82
+        
+        return ((x_mean, y_mean), (major_axis, minor_axis), angle_deg)
 
     def apply(self, image: np.ndarray) -> np.ndarray:
-        edges   = self._canny.apply(image)
-        output  = to_bgr(image)
+        edges = self._canny.apply(image)
+        output = to_bgr(image)
 
-        # Connect small edge gaps before contour extraction to stabilize fits.
         edges = cv2.morphologyEx(
             edges,
             cv2.MORPH_CLOSE,
@@ -323,39 +401,42 @@ class HoughEllipsesFilter(Base):
 
         h, w = edges.shape
         max_area = float(h * w) * self.max_area_ratio
+        
+        # We extract structural boundaries, then mathematically fit them ourselves
         contours, _ = cv2.findContours(
             edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
+        
         for cnt in contours:
             if len(cnt) < max(self.min_points, 5):
                 continue
 
-            area = cv2.contourArea(cnt)
+            area = float(cv2.contourArea(cnt))
             if area < self.min_area or area > max_area:
                 continue
 
             hull = cv2.convexHull(cnt)
-            if len(hull) < 5:
+            
+            # Apply our custom mathematical fit instead of cv2.fitEllipse
+            ellipse = self._fit_ellipse_pca(hull)
+            if ellipse is None:
+                continue
+                
+            (center, axes, angle) = ellipse
+            major, minor = max(axes), min(axes)
+            
+            if minor <= 0 or (major / minor) > 8.0:
                 continue
 
-            try:
-                ellipse = cv2.fitEllipse(hull)
-                (_, _), (axis_a, axis_b), _ = ellipse
-                major = max(axis_a, axis_b)
-                minor = min(axis_a, axis_b)
-
-                # Reject tiny or highly degenerate ellipses from noisy contours.
-                if minor < self.min_axis or major <= 0:
-                    continue
-                if (major / (minor + 1e-6)) > 8.0:
-                    continue
-
-                cv2.ellipse(output, ellipse, (255, 0, 0), 2)
-            except cv2.error:
-                # fitEllipse can fail on collinear / degenerate point sets
-                continue
+            # Draw the resulting math model back onto the image
+            cv2.ellipse(
+                output, 
+                (int(center[0]), int(center[1])), 
+                (int(major / 2), int(minor / 2)), 
+                angle, 0, 360, (255, 0, 0), 2
+            )
+            
         return output
-
 
 # 7. Active Contour (Snake)
 
