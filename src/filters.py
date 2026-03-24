@@ -3,6 +3,11 @@ from __future__ import annotations
 import numpy as np
 import cv2
 
+try:
+    from skimage.transform import hough_ellipse
+except ImportError:
+    hough_ellipse = None
+
 from .base import Base
 from .utils import (
     to_gray,
@@ -103,10 +108,13 @@ class CannyFilter(Base):
         gy = gy.astype(np.float64)
 
         # Calculate Magnitude (edge strength) and Direction (edge angle)
+        # np.hypot(x, y) -> sqrt(x1**2 + x2**2)
         magnitude = np.hypot(gx, gy)
 
         # Calculate angle in degrees (0 to 180)
+        # Divide by np.pi to get the angle in degrees, as np.arctan2() returns the angle in radians
         direction = np.arctan2(gy, gx) * 180 / np.pi
+        # Make all the angles in the first 2 quartiles
         direction[direction < 0] += 180
 
         # Step 3: Non-Maximum Suppression
@@ -133,7 +141,7 @@ class CannyFilter(Base):
 
                 # Discretize the angle into 4 main directions: 0, 45, 90, 135
 
-                # Direction: 0 degrees (Horizontal edge, compare North-South)
+                # Direction: 0 degrees (Vertical edge, compare East-West)
                 if (0 <= angle[i, j] < 22.5) or (157.5 <= angle[i, j] <= 180):
                     q = mag[i, j + 1]
                     r = mag[i, j - 1]
@@ -143,7 +151,7 @@ class CannyFilter(Base):
                     q = mag[i + 1, j - 1]
                     r = mag[i - 1, j + 1]
 
-                # Direction: 90 degrees (Vertical edge, compare East-West)
+                # Direction: 90 degrees (Horizontal edge, compare North-South)
                 elif (67.5 <= angle[i, j] < 112.5):
                     q = mag[i + 1, j]
                     r = mag[i - 1, j]
@@ -258,7 +266,7 @@ class HoughLinesFilter(Base):
             
             a = np.cos(theta)
             b = np.sin(theta)
-            x0 = a * rho
+            x0 = a * rho 
             y0 = b * rho
             
             # Extend lines across the image
@@ -334,108 +342,91 @@ class HoughCirclesFilter(Base):
 
 class HoughEllipsesFilter(Base):
     """
-    Fits ellipses to contours by calculating the spatial moments and 
-    covariance matrix (PCA) from scratch, replacing cv2.fitEllipse.
+    Ellipse detector based on skimage.transform.hough_ellipse
+    (Xie & Ji style Hough method).
     """
 
     def __init__(
         self,
         canny_low: int = 50,
         canny_high: int = 150,
-        min_points: int = 10,
-        min_area: float = 120.0,
-        max_area_ratio: float = 0.9,
+        max_ellipses: int = 5,
+        min_axis: float = 8.0,
+        max_axis_ratio: float = 6.0,
+        hough_accuracy: int = 20,
+        hough_threshold: int = 120,
+        max_size_ratio: float = 0.5,
     ) -> None:
         self._canny = CannyFilter(canny_low, canny_high)
-        self.min_points = min_points
-        self.min_area = min_area
-        self.max_area_ratio = max_area_ratio
-
-    def _fit_ellipse_pca(self, points: np.ndarray):
-        """Fits an ellipse to a set of 2D points using covariance."""
-        pts = points[:, 0, :].astype(np.float64)
-        n = len(pts)
-        if n < 5:
-            return None
-            
-        x, y = pts[:, 0], pts[:, 1]
-        x_mean, y_mean = np.mean(x), np.mean(y)
-        
-        # Calculate covariance matrix components
-        u11 = np.sum((x - x_mean)**2) / n
-        u22 = np.sum((y - y_mean)**2) / n
-        u12 = np.sum((x - x_mean) * (y - y_mean)) / n
-        
-        # Find eigenvalues to get axis lengths
-        trace = u11 + u22
-        det = u11 * u22 - u12**2
-        sqrt_term = np.sqrt(max(0, trace**2 - 4 * det))
-        
-        lambda1 = (trace + sqrt_term) / 2
-        lambda2 = (trace - sqrt_term) / 2
-        
-        # Find orientation angle
-        if u12 != 0:
-            angle = 0.5 * np.arctan2(2 * u12, u11 - u22)
-        else:
-            angle = 0 if u11 > u22 else np.pi / 2
-            
-        angle_deg = np.rad2deg(angle)
-        
-        # Scale eigenvalues to approximate bounding axes (empirical scaling for boundaries)
-        major_axis = 2.0 * np.sqrt(lambda1) * 2.82 
-        minor_axis = 2.0 * np.sqrt(lambda2) * 2.82
-        
-        return ((x_mean, y_mean), (major_axis, minor_axis), angle_deg)
+        self.max_ellipses = max(1, max_ellipses)
+        self.min_axis = max(1.0, float(min_axis))
+        self.max_axis_ratio = max(1.0, float(max_axis_ratio))
+        self.hough_accuracy = max(1, int(hough_accuracy))
+        self.hough_threshold = max(1, int(hough_threshold))
+        self.max_size_ratio = float(np.clip(max_size_ratio, 0.1, 1.0))
 
     def apply(self, image: np.ndarray) -> np.ndarray:
-        edges = self._canny.apply(image)
+        """
+        Detect ellipses using skimage's hough_ellipse.
+        """
         output = to_bgr(image)
 
-        edges = cv2.morphologyEx(
+        if hough_ellipse is None:
+            return output
+
+        gray = to_gray(image)
+        edges = self._canny.apply(image) > 0
+
+        h, w = gray.shape
+        max_size = max(int(min(h, w) * self.max_size_ratio), int(self.min_axis) + 1)
+        min_size = max(5, int(self.min_axis))
+        if max_size <= min_size:
+            max_size = min_size + 1
+
+        results = hough_ellipse(
             edges,
-            cv2.MORPH_CLOSE,
-            np.ones((3, 3), dtype=np.uint8),
-            iterations=1,
+            accuracy=self.hough_accuracy,
+            threshold=self.hough_threshold,
+            min_size=min_size,
+            max_size=max_size,
         )
 
-        h, w = edges.shape
-        max_area = float(h * w) * self.max_area_ratio
-        
-        # We extract structural boundaries, then mathematically fit them ourselves
-        contours, _ = cv2.findContours(
-            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        
-        for cnt in contours:
-            if len(cnt) < max(self.min_points, 5):
+        if len(results) == 0:
+            return output
+
+        # Highest accumulator score first.
+        results.sort(order="accumulator")
+        best = results[::-1][: self.max_ellipses]
+
+        for e in best:
+            cy = int(round(float(e["yc"])))
+            cx = int(round(float(e["xc"])))
+            # skimage returns semi-axes as row-radius (a) and col-radius (b).
+            a = float(e["a"])
+            b = float(e["b"])
+            theta_deg = float(np.rad2deg(float(e["orientation"])))
+
+            if a <= 0 or b <= 0:
+                continue
+            major = max(a, b)
+            minor = min(a, b)
+            if minor < self.min_axis:
+                continue
+            if (major / minor) > self.max_axis_ratio:
                 continue
 
-            area = float(cv2.contourArea(cnt))
-            if area < self.min_area or area > max_area:
-                continue
-
-            hull = cv2.convexHull(cnt)
-            
-            # Apply our custom mathematical fit instead of cv2.fitEllipse
-            ellipse = self._fit_ellipse_pca(hull)
-            if ellipse is None:
-                continue
-                
-            (center, axes, angle) = ellipse
-            major, minor = max(axes), min(axes)
-            
-            if minor <= 0 or (major / minor) > 8.0:
-                continue
-
-            # Draw the resulting math model back onto the image
             cv2.ellipse(
-                output, 
-                (int(center[0]), int(center[1])), 
-                (int(major / 2), int(minor / 2)), 
-                angle, 0, 360, (255, 0, 0), 2
+                output,
+                (cx, cy),
+                # OpenCV expects axes as (x_radius, y_radius) => (col_radius, row_radius)
+                (int(round(b)), int(round(a))),
+                theta_deg,
+                0,
+                360,
+                (255, 0, 0),
+                2,
             )
-            
+
         return output
 
 # 7. Active Contour (Snake)

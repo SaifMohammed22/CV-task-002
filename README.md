@@ -14,6 +14,15 @@ Steps for cany edge detector:
 5. Double Thresholding
 6. Edge Tracking by Hysteresis
 
+## Dependencies
+- Core: `numpy`, `opencv-python`
+- Ellipse detection: `scikit-image`
+
+Install with:
+`pip install numpy opencv-python scikit-image`
+
+The ellipse detector uses `skimage.transform.hough_ellipse`.
+
 
 
 ---
@@ -22,4 +31,4 @@ Steps for cany edge detector:
 2. Seif Samaan
 3. Fady Osama
 4. Mohamed Ashraf
-5. Manar Yousry
+5. Manar

@@ -123,9 +123,13 @@ def _sidebar_task_a() -> dict:
     params["hc_min_r"]     = st.sidebar.slider("Min Radius",           1, 100, 10)
     params["hc_max_r"]     = st.sidebar.slider("Max Radius",           10, 200, 50)
 
-    st.sidebar.markdown("**Hough Ellipses (PCA)**")
-    params["he_min_pts"]   = st.sidebar.slider("Min contour points",   5, 50, 10)
-    params["he_min_area"]  = st.sidebar.slider("Min contour area",     20, 2000, 120)
+    st.sidebar.markdown("**Hough Ellipses (skimage)**")
+    params["he_max_count"] = st.sidebar.slider("Max ellipses", 1, 10, 5)
+    params["he_min_axis"] = st.sidebar.slider("Min axis length", 2, 40, 8)
+    params["he_axis_ratio"] = st.sidebar.slider("Max axis ratio", 1.5, 12.0, 6.0, 0.1)
+    params["he_hough_accuracy"] = st.sidebar.slider("Hough accuracy", 5, 40, 20)
+    params["he_hough_threshold"] = st.sidebar.slider("Hough threshold", 20, 400, 120)
+    params["he_max_size_ratio"] = st.sidebar.slider("Max size ratio", 0.10, 1.00, 0.50, 0.05)
 
     return params
 
@@ -244,8 +248,12 @@ def page_task_a() -> None:
         HoughEllipsesFilter(
             canny_low  = p["canny_low"],
             canny_high = p["canny_high"],
-            min_points = p["he_min_pts"],
-            min_area   = p["he_min_area"],
+            max_ellipses = p["he_max_count"],
+            min_axis = p["he_min_axis"],
+            max_axis_ratio = p["he_axis_ratio"],
+            hough_accuracy = p["he_hough_accuracy"],
+            hough_threshold = p["he_hough_threshold"],
+            max_size_ratio = p["he_max_size_ratio"],
         ),
         image,
     )
